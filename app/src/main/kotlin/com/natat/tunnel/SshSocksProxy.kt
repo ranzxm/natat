@@ -168,19 +168,20 @@ private class ProtectedSocketProxy(
     override fun connect(socketFactory: SocketFactory?, host: String, port: Int, timeout: Int) {
         val endpointHost = if (config.useHttpPayload) config.host.ifBlank { host } else host
         val endpointPort = if (config.useHttpPayload) config.port else port
-        val raw = Socket().also {
-            check(vpnService.protect(it)) { "Gagal mengecualikan SSH socket dari VPN" }
-            it.connect(java.net.InetSocketAddress(endpointHost, endpointPort), timeout)
-            it.soTimeout = timeout
-        }
         socket = if (config.useTls) {
             val sni = config.sni.ifBlank { endpointHost }
-            (SSLSocketFactory.getDefault().createSocket(raw, sni, endpointPort, true) as SSLSocket).apply {
+            // Android's API 26 SSLSocketFactory cannot wrap an existing protected Socket.
+            // This connection is made before this service establishes its VPN interface.
+            (SSLSocketFactory.getDefault().createSocket(sni, endpointPort) as SSLSocket).apply {
                 soTimeout = timeout
                 sslParameters = sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
                 startHandshake()
             }
-        } else raw
+        } else Socket().also {
+            check(vpnService.protect(it)) { "Gagal mengecualikan SSH socket dari VPN" }
+            it.connect(java.net.InetSocketAddress(endpointHost, endpointPort), timeout)
+            it.soTimeout = timeout
+        }
         if (config.useHttpPayload) sendPayload(requireNotNull(socket), host, port)
     }
 
