@@ -5,6 +5,7 @@ plugins {
 
 dependencies {
     implementation("com.github.mwiede:jsch:2.28.7")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }
 
 android {

@@ -45,6 +45,7 @@ class TunnelService : VpnService() {
             runCatching { TunnelConfig.fromJson(it) }.getOrDefault(TunnelConfig())
         } ?: ConfigStore.load(this)
         stopped = false
+        ConnectionLogStore.append(this, currentConfig.id, "Starting ${currentConfig.protocol} tunnel")
         startForeground(NOTIFICATION_ID, notification("Menghubungkan..."))
         executor.execute { startTunnel() }
         return START_STICKY
@@ -79,6 +80,9 @@ class TunnelService : VpnService() {
                 .addRoute("::", 0)
                 .addDisallowedApplication(packageName)
             currentConfig.dnsServers.forEach { interfaceBuilder.addDnsServer(it) }
+            currentConfig.bypassPackages.filterNot { it == packageName }.forEach { packageName ->
+                runCatching { interfaceBuilder.addDisallowedApplication(packageName) }
+            }
             vpnInterface = interfaceBuilder.establish() ?: error("VPN interface gagal dibuat")
             configFile = yaml
             val descriptor = vpnInterface ?: error("VPN descriptor tidak tersedia")
@@ -87,6 +91,7 @@ class TunnelService : VpnService() {
             monitor?.cancel(false)
             monitor = executor.scheduleWithFixedDelay({ monitorTunnel() }, 2, 5, TimeUnit.SECONDS)
             updateNotification("Terhubung via ${currentConfig.protocol}")
+            ConnectionLogStore.append(this, currentConfig.id, "Connected via ${currentConfig.protocol}")
             broadcast(STATE_CONNECTED)
         } catch (error: Exception) {
             fail(error.message ?: "Koneksi gagal")
@@ -105,6 +110,7 @@ class TunnelService : VpnService() {
 
     private fun fail(detail: String, reconnect: Boolean = true) {
         stopTunnel(detail)
+        ConnectionLogStore.append(this, currentConfig.id, "Error: $detail")
         retry++
         updateNotification("Gagal, mencoba ulang")
         broadcast(STATE_ERROR, detail)
@@ -126,6 +132,7 @@ class TunnelService : VpnService() {
         vpnInterface = null
         configFile?.delete()
         configFile = null
+        ConnectionLogStore.append(this, currentConfig.id, reason)
         broadcast(STATE_DISCONNECTED, reason)
     }
 

@@ -35,6 +35,8 @@ data class TunnelConfig(
     val dnsServers: List<String> = listOf("1.1.1.1", "2606:4700:4700::1111"),
     val udpEnabled: Boolean = true,
     val autoReconnect: Boolean = true,
+    val startOnBoot: Boolean = false,
+    val bypassPackages: List<String> = emptyList(),
     val connectTimeoutMs: Int = 10_000,
     val keepAliveSeconds: Int = 25
 ) {
@@ -65,6 +67,8 @@ data class TunnelConfig(
         put("dnsServers", JSONArray(dnsServers))
         put("udpEnabled", udpEnabled)
         put("autoReconnect", autoReconnect)
+        put("startOnBoot", startOnBoot)
+        put("bypassPackages", JSONArray(bypassPackages))
         put("connectTimeoutMs", connectTimeoutMs)
         put("keepAliveSeconds", keepAliveSeconds)
     }.toString(2)
@@ -78,6 +82,9 @@ data class TunnelConfig(
             val dns = json.optJSONArray("dnsServers")?.let { values ->
                 List(values.length()) { index -> values.optString(index).trim() }.filter { it.isNotBlank() }
             }.orEmpty().ifEmpty { listOf("1.1.1.1", "2606:4700:4700::1111") }
+            val bypassPackages = json.optJSONArray("bypassPackages")?.let { values ->
+                List(values.length()) { index -> values.optString(index).trim() }.filter { it.isNotBlank() }
+            }.orEmpty()
             return TunnelConfig(
                 id = json.optString("id").ifBlank { UUID.randomUUID().toString() },
                 name = json.optString("name", "New connection"),
@@ -104,6 +111,8 @@ data class TunnelConfig(
                 dnsServers = dns,
                 udpEnabled = json.optBoolean("udpEnabled", true),
                 autoReconnect = json.optBoolean("autoReconnect", true),
+                startOnBoot = json.optBoolean("startOnBoot", false),
+                bypassPackages = bypassPackages,
                 connectTimeoutMs = json.optInt("connectTimeoutMs", 10_000).coerceIn(1_000, 60_000),
                 keepAliveSeconds = json.optInt("keepAliveSeconds", 25).coerceIn(5, 120)
             )

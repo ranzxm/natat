@@ -24,11 +24,15 @@ import android.widget.AdapterView
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.integration.android.IntentIntegrator
+import com.journeyapps.barcodescanner.BarcodeEncoder
 
 class MainActivity : Activity() {
     private val background = Color.rgb(9, 16, 29)
@@ -106,6 +110,7 @@ class MainActivity : Activity() {
         val filter = IntentFilter(TunnelService.ACTION_STATE)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(stateReceiver, filter, RECEIVER_NOT_EXPORTED)
         else registerReceiver(stateReceiver, filter)
+        if (::logView.isInitialized) showStoredLog()
     }
 
     override fun onPause() {
@@ -115,8 +120,16 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        IntentIntegrator.parseActivityResult(requestCode, resultCode, data)?.let { result ->
+            result.contents?.let { importConfig(it) } ?: appendLog("QR scan cancelled")
+            return
+        }
         if (requestCode == VPN_REQUEST) {
             if (resultCode == RESULT_OK) startTunnel(ConfigStore.load(this))
+            return
+        }
+        if (requestCode == APP_ROUTING_REQUEST) {
+            if (resultCode == RESULT_OK) applyConfig(ConfigStore.load(this))
             return
         }
         if (resultCode != RESULT_OK || data?.data == null) return
@@ -245,6 +258,8 @@ class MainActivity : Activity() {
         reconnectRow.addView(autoReconnect)
         configCard.addView(reconnectRow)
         configCard.addView(space(10))
+        configCard.addView(actionButton("APP ROUTING: BYPASS SELECTED APPS") { openAppRouting() }, LinearLayout.LayoutParams(MATCH, dp(42)))
+        configCard.addView(space(8))
         configCard.addView(actionButton("ADVANCED: SSH KEY / FINGERPRINT / DNS") { openAdvancedEditor() }, LinearLayout.LayoutParams(MATCH, dp(42)))
         root.addView(configCard)
 
@@ -255,6 +270,11 @@ class MainActivity : Activity() {
         toolsRow.addView(actionButton("IMPORT JSON") { importConfig() }, LinearLayout.LayoutParams(0, dp(42), 1f))
         toolsRow.addView(actionButton("EXPORT JSON") { exportConfig() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(8) })
         toolsCard.addView(toolsRow)
+        toolsCard.addView(space(8))
+        val qrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        qrRow.addView(actionButton("IMPORT QR") { importQr() }, LinearLayout.LayoutParams(0, dp(42), 1f))
+        qrRow.addView(actionButton("SHOW QR") { showQr() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(8) })
+        toolsCard.addView(qrRow)
         root.addView(toolsCard)
 
         root.addView(space(14))
@@ -417,7 +437,12 @@ class MainActivity : Activity() {
         runCatching {
             contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                 ?: error("File tidak dapat dibaca")
-        }.mapCatching { TunnelConfig.fromJson(it) }.onSuccess {
+        }.onSuccess { importConfig(it) }
+            .onFailure { appendLog("Import failed: ${it.message}") }
+    }
+
+    private fun importConfig(raw: String) {
+        runCatching { TunnelConfig.fromJson(raw) }.onSuccess {
             ConfigStore.save(this, it)
             applyConfig(it)
             appendLog("Imported ${it.name}")
@@ -440,6 +465,34 @@ class MainActivity : Activity() {
         }.onSuccess { appendLog("Config exported") }
             .onFailure { appendLog("Export failed: ${it.message}") }
         pendingExport = null
+    }
+
+    private fun importQr() {
+        IntentIntegrator(this).apply {
+            setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+            setPrompt("Scan Natat configuration QR")
+            setBeepEnabled(false)
+            initiateScan()
+        }
+    }
+
+    private fun showQr() {
+        val config = readConfig() ?: return
+        runCatching {
+            BarcodeEncoder().encodeBitmap(config.toJson(), BarcodeFormat.QR_CODE, dp(300), dp(300))
+        }.onSuccess { bitmap ->
+            AlertDialog.Builder(this)
+                .setTitle("Natat config QR")
+                .setView(ImageView(this).apply { setImageBitmap(bitmap); setPadding(dp(12), dp(12), dp(12), dp(12)) })
+                .setPositiveButton("Close", null)
+                .show()
+        }.onFailure { appendLog("QR export failed: ${it.message}") }
+    }
+
+    private fun openAppRouting() {
+        ConfigStore.save(this, draftConfig())
+        startActivityForResult(Intent(this, AppRoutingActivity::class.java)
+            .putExtra(AppRoutingActivity.EXTRA_PROFILE_ID, activeConfig.id), APP_ROUTING_REQUEST)
     }
 
     private fun setConnected(detail: String) {
@@ -473,6 +526,12 @@ class MainActivity : Activity() {
         if (!::logView.isInitialized) return
         val previous = logView.text.toString().lineSequence().toList().takeLast(3).joinToString("\n")
         logView.text = (if (previous.isBlank()) message else "$previous\n$message").takeLast(400)
+    }
+
+    private fun showStoredLog() {
+        ConnectionLogStore.recent(this, activeConfig.id).takeIf { it.isNotEmpty() }?.let {
+            logView.text = it.joinToString("\n")
+        }
     }
 
     private fun openAdvancedEditor() {
@@ -514,6 +573,7 @@ class MainActivity : Activity() {
         heading("VPN / DNS")
         val dns = input(draft.dnsServers.joinToString(", "), "DNS servers, comma separated")
         val udpEnabled = toggle("Enable UDP relay", draft.udpEnabled)
+        val startOnBoot = toggle("Reconnect automatically after device boot", draft.startOnBoot)
 
         AlertDialog.Builder(this)
             .setTitle("Advanced connection settings")
@@ -526,7 +586,8 @@ class MainActivity : Activity() {
                     sshHostKeyFingerprint = hostKeyFingerprint.text.toString().trim(),
                     dnsServers = dns.text.toString().split(',').map { it.trim() }.filter { it.isNotBlank() }
                         .ifEmpty { listOf("1.1.1.1") },
-                    udpEnabled = udpEnabled.isChecked
+                    udpEnabled = udpEnabled.isChecked,
+                    startOnBoot = startOnBoot.isChecked
                 )
                 ConfigStore.save(this, draftConfig())
                 appendLog("Advanced settings saved")
@@ -666,5 +727,6 @@ class MainActivity : Activity() {
         private const val IMPORT_REQUEST = 30
         private const val EXPORT_REQUEST = 31
         private const val NOTIFICATION_REQUEST = 40
+        private const val APP_ROUTING_REQUEST = 50
     }
 }
