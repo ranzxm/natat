@@ -103,7 +103,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildView(): View {
-        val scroll = ScrollView(this).apply { setBackgroundColor(background); isFillViewport = true }
+        val scroll = ScrollView(this).apply { setBackgroundColor(this@MainActivity.background); isFillViewport = true }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(22), dp(20), dp(28))
@@ -311,7 +311,7 @@ class MainActivity : Activity() {
 
     private fun appendLog(message: String) {
         if (!::logView.isInitialized) return
-        val previous = logView.text.toString().lineSequence().takeLast(3).joinToString("\n")
+        val previous = logView.text.toString().lineSequence().toList().takeLast(3).joinToString("\n")
         logView.text = (if (previous.isBlank()) message else "$previous\n$message").takeLast(400)
     }
 
