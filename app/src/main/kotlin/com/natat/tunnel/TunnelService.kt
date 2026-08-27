@@ -57,7 +57,7 @@ class TunnelService : VpnService() {
             val endpoint = when (currentConfig.protocol) {
                 TunnelProtocol.SOCKS5 -> LocalSocksEndpoint(currentConfig.host, currentConfig.port, currentConfig.password)
                 TunnelProtocol.SSH -> {
-                    val proxy = SshSocksProxy(currentConfig, this)
+                    val proxy = SshSocksProxy(currentConfig)
                     sshProxy = proxy
                     val localEndpoint = proxy.start()
                     proxy.learnedHostKeyFingerprint?.let { fingerprint ->

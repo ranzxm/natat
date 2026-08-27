@@ -1,6 +1,5 @@
 package com.natat.tunnel
 
-import android.net.VpnService
 import android.util.Base64
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.HostKey
@@ -27,8 +26,7 @@ import javax.net.ssl.SSLSocketFactory
 
 /** Exposes a bounded, authenticated loopback SOCKS5 endpoint over one SSH session. */
 class SshSocksProxy(
-    private val config: TunnelConfig,
-    private val vpnService: VpnService
+    private val config: TunnelConfig
 ) : Closeable {
     private val token = UUID.randomUUID().toString().replace("-", "")
     private val workers = ThreadPoolExecutor(
@@ -64,7 +62,7 @@ class SshSocksProxy(
             setConfig("StrictHostKeyChecking", "yes")
             setConfig("PreferredAuthentications", "publickey,password,keyboard-interactive")
             setServerAliveInterval(config.keepAliveSeconds * 1_000)
-            setProxy(ProtectedSocketProxy(vpnService, config))
+            setProxy(TransportSocketProxy(config))
             connect(config.connectTimeoutMs)
         }
         server = ServerSocket(0, MAX_QUEUE, InetAddress.getByName("127.0.0.1"))
@@ -163,10 +161,7 @@ class SshSocksProxy(
 
 data class LocalSocksEndpoint(val host: String, val port: Int, val password: String)
 
-private class ProtectedSocketProxy(
-    private val vpnService: VpnService,
-    private val config: TunnelConfig
-) : Proxy {
+private class TransportSocketProxy(private val config: TunnelConfig) : Proxy {
     private var socket: Socket? = null
 
     override fun connect(socketFactory: SocketFactory?, host: String, port: Int, timeout: Int) {
@@ -182,7 +177,6 @@ private class ProtectedSocketProxy(
                 startHandshake()
             }
         } else Socket().also {
-            check(vpnService.protect(it)) { "Gagal mengecualikan SSH socket dari VPN" }
             it.connect(java.net.InetSocketAddress(endpointHost, endpointPort), timeout)
             it.soTimeout = timeout
         }
