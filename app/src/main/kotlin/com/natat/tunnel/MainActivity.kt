@@ -46,7 +46,18 @@ class MainActivity : Activity() {
     private lateinit var port: EditText
     private lateinit var username: EditText
     private lateinit var password: EditText
-    private lateinit var protocol: Spinner
+    private lateinit var setupMode: Spinner
+    private lateinit var sshHost: EditText
+    private lateinit var sshPort: EditText
+    private lateinit var sshUsername: EditText
+    private lateinit var sshPassword: EditText
+    private lateinit var httpPayload: EditText
+    private lateinit var sni: EditText
+    private lateinit var sshSection: LinearLayout
+    private lateinit var proxySection: LinearLayout
+    private lateinit var proxyAuthSection: LinearLayout
+    private lateinit var payloadSection: LinearLayout
+    private lateinit var tlsSection: LinearLayout
     private lateinit var autoReconnect: Switch
     private lateinit var statusDot: View
     private lateinit var statusTitle: TextView
@@ -58,6 +69,7 @@ class MainActivity : Activity() {
     private var pendingExport: String? = null
     private var activeConfig = TunnelConfig()
     private var updatingProfiles = false
+    private var updatingMode = false
 
     private val stateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -163,31 +175,66 @@ class MainActivity : Activity() {
 
         root.addView(space(14))
         val configCard = card()
-        configCard.addView(sectionTitle("CONNECTION CONFIG"))
+        configCard.addView(sectionTitle("TUNNEL SETUP"))
         profileName = field("Profile name")
         configCard.addView(profileName, LinearLayout.LayoutParams(MATCH, dp(52)))
         configCard.addView(space(12))
-        configCard.addView(label("Protocol", 12f, textSecondary, false))
-        protocol = Spinner(this).apply {
+        configCard.addView(label("Connection type", 12f, textSecondary, false))
+        setupMode = Spinner(this).apply {
             background = rounded(fieldBackground, 10)
-            adapter = protocolAdapter()
+            adapter = modeAdapter()
         }
-        configCard.addView(protocol, LinearLayout.LayoutParams(MATCH, dp(48)).apply { topMargin = dp(6) })
+        configCard.addView(setupMode, LinearLayout.LayoutParams(MATCH, dp(48)).apply { topMargin = dp(6) })
         configCard.addView(space(12))
 
-        val addressRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        host = field("Server host")
-        port = field("Port").apply { inputType = InputType.TYPE_CLASS_NUMBER }
-        addressRow.addView(host, LinearLayout.LayoutParams(0, dp(52), 2f))
-        addressRow.addView(port, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
-        configCard.addView(addressRow)
-        configCard.addView(space(8))
-        val authRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        username = field("Username")
-        password = field("Password").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
-        authRow.addView(username, LinearLayout.LayoutParams(0, dp(52), 1f))
-        authRow.addView(password, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
-        configCard.addView(authRow)
+        proxySection = setupSection("1. REMOTE PROXY")
+        proxySection.addView(label("SOCKS5 upstream or the server that receives your HTTP payload", 11f, textSecondary, false))
+        val proxyRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        host = field("Proxy host")
+        port = field("Proxy port").apply { inputType = InputType.TYPE_CLASS_NUMBER }
+        proxyRow.addView(host, LinearLayout.LayoutParams(0, dp(52), 2f))
+        proxyRow.addView(port, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
+        proxySection.addView(proxyRow)
+        proxyAuthSection = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        username = field("SOCKS username (optional)")
+        password = field("SOCKS password (optional)").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        proxyAuthSection.addView(username, LinearLayout.LayoutParams(0, dp(52), 1f))
+        proxyAuthSection.addView(password, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
+        proxySection.addView(proxyAuthSection)
+        configCard.addView(proxySection)
+
+        sshSection = setupSection("2. SSH SERVER")
+        sshSection.addView(label("Your SSH account server", 11f, textSecondary, false))
+        val sshServerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        sshHost = field("SSH host")
+        sshPort = field("SSH port").apply { inputType = InputType.TYPE_CLASS_NUMBER }
+        sshServerRow.addView(sshHost, LinearLayout.LayoutParams(0, dp(52), 2f))
+        sshServerRow.addView(sshPort, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
+        sshSection.addView(sshServerRow)
+        val sshAuth = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        sshUsername = field("SSH username")
+        sshPassword = field("SSH password").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        sshAuth.addView(sshUsername, LinearLayout.LayoutParams(0, dp(52), 1f))
+        sshAuth.addView(sshPassword, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
+        sshSection.addView(sshAuth)
+        configCard.addView(sshSection)
+
+        payloadSection = setupSection("3. CUSTOM HTTP PAYLOAD")
+        payloadSection.addView(label("Use [host], [port], and [crlf]. Add Proxy-Authorization here if required.", 11f, textSecondary, false))
+        httpPayload = field("CONNECT [host]:[port] HTTP/1.1[crlf]...").apply {
+            setSingleLine(false)
+            minLines = 4
+            gravity = Gravity.TOP
+        }
+        payloadSection.addView(httpPayload, LinearLayout.LayoutParams(MATCH, dp(112)))
+        configCard.addView(payloadSection)
+
+        tlsSection = setupSection("4. TLS / SNI")
+        tlsSection.addView(label("Certificate verification is always enabled", 11f, textSecondary, false))
+        sni = field("SNI server name (optional)")
+        tlsSection.addView(sni, LinearLayout.LayoutParams(MATCH, dp(52)))
+        configCard.addView(tlsSection)
+
         configCard.addView(space(8))
         val reconnectRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val reconnectText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -198,7 +245,7 @@ class MainActivity : Activity() {
         reconnectRow.addView(autoReconnect)
         configCard.addView(reconnectRow)
         configCard.addView(space(10))
-        configCard.addView(actionButton("ADVANCED: SSH / PAYLOAD / TLS / WS / DNS") { openAdvancedEditor() }, LinearLayout.LayoutParams(MATCH, dp(42)))
+        configCard.addView(actionButton("ADVANCED: SSH KEY / FINGERPRINT / DNS") { openAdvancedEditor() }, LinearLayout.LayoutParams(MATCH, dp(42)))
         root.addView(configCard)
 
         root.addView(space(14))
@@ -234,6 +281,13 @@ class MainActivity : Activity() {
 
             override fun onNothingSelected(parent: AdapterView<*>) = Unit
         }
+        setupMode.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (!updatingMode) updateSetupVisibility()
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) = Unit
+        }
         return scroll
     }
 
@@ -263,7 +317,8 @@ class MainActivity : Activity() {
         statusTitle.text = "Connecting..."
         statusDetail.text = "Starting protected tunnel"
         statusDot.background = circle(primary)
-        appendLog("Connecting to ${config.host}:${config.port}")
+        val destination = if (config.protocol == TunnelProtocol.SSH) "${config.sshHost}:${config.sshPort}" else "${config.host}:${config.port}"
+        appendLog("Connecting to $destination")
     }
 
     private fun readConfig(): TunnelConfig? {
@@ -283,13 +338,23 @@ class MainActivity : Activity() {
     }
 
     private fun draftConfig(): TunnelConfig {
+        val mode = SetupMode.entries[setupMode.selectedItemPosition]
         return activeConfig.copy(
             name = profileName.text.toString().trim().ifBlank { "Natat connection" },
-            protocol = TunnelProtocol.entries[protocol.selectedItemPosition],
+            protocol = if (mode == SetupMode.SOCKS5) TunnelProtocol.SOCKS5 else TunnelProtocol.SSH,
             host = host.text.toString().trim(),
             port = port.text.toString().toIntOrNull() ?: 0,
             username = username.text.toString(),
             password = password.text.toString(),
+            sshHost = sshHost.text.toString().trim(),
+            sshPort = sshPort.text.toString().toIntOrNull() ?: 22,
+            sshUsername = sshUsername.text.toString(),
+            sshPassword = sshPassword.text.toString(),
+            useHttpPayload = mode.usesPayload,
+            httpPayload = httpPayload.text.toString(),
+            useTls = mode.usesTls,
+            sni = sni.text.toString().trim(),
+            useWebSocket = false,
             autoReconnect = autoReconnect.isChecked
         )
     }
@@ -301,8 +366,17 @@ class MainActivity : Activity() {
         port.setText(config.port.toString())
         username.setText(config.username)
         password.setText(config.password)
+        sshHost.setText(config.sshHost)
+        sshPort.setText(config.sshPort.toString())
+        sshUsername.setText(config.sshUsername)
+        sshPassword.setText(config.sshPassword)
+        httpPayload.setText(config.httpPayload)
+        sni.setText(config.sni)
         autoReconnect.isChecked = config.autoReconnect
-        protocol.setSelection(TunnelProtocol.entries.indexOf(config.protocol).coerceAtLeast(0))
+        updatingMode = true
+        setupMode.setSelection(SetupMode.from(config).ordinal)
+        updatingMode = false
+        updateSetupVisibility()
         refreshProfilePicker(config.id)
     }
 
@@ -433,25 +507,10 @@ class MainActivity : Activity() {
             }
         }
 
-        heading("SSH ACCOUNT")
-        val sshHost = input(draft.sshHost, "SSH host")
-        val sshPort = input(draft.sshPort.toString(), "SSH port")
-        val sshUser = input(draft.sshUsername, "SSH username")
-        val sshPassword = input(draft.sshPassword, "SSH password", secret = true)
+        heading("SSH SECURITY")
         val privateKey = input(draft.privateKey, "Private key (paste PEM)", multiLine = true)
         val privateKeyPassphrase = input(draft.privateKeyPassphrase, "Private key passphrase", secret = true)
         val hostKeyFingerprint = input(draft.sshHostKeyFingerprint, "SSH host key SHA256 fingerprint")
-        heading("HTTP PAYLOAD")
-        val payloadEnabled = toggle("Enable custom HTTP payload", draft.useHttpPayload)
-        val payload = input(draft.httpPayload, "CONNECT / HTTP/1.1 ...", multiLine = true)
-        heading("TLS / SNI")
-        val tlsEnabled = toggle("Wrap transport with TLS", draft.useTls)
-        val sni = input(draft.sni, "SNI / server name")
-        val skipCertificate = toggle("Skip certificate verification", draft.skipCertificateVerification)
-        heading("WEBSOCKET")
-        val websocketEnabled = toggle("Enable WebSocket transport", draft.useWebSocket)
-        val websocketPath = input(draft.websocketPath, "WebSocket path")
-        val websocketHeaders = input(draft.websocketHeaders, "Extra headers, one per line", multiLine = true)
         heading("VPN / DNS")
         val dns = input(draft.dnsServers.joinToString(", "), "DNS servers, comma separated")
         val udpEnabled = toggle("Enable UDP relay", draft.udpEnabled)
@@ -462,21 +521,9 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save") { _, _ ->
                 activeConfig = draft.copy(
-                    sshHost = sshHost.text.toString().trim(),
-                    sshPort = sshPort.text.toString().toIntOrNull()?.coerceIn(1, 65535) ?: 22,
-                    sshUsername = sshUser.text.toString(),
-                    sshPassword = sshPassword.text.toString(),
                     privateKey = privateKey.text.toString(),
                     privateKeyPassphrase = privateKeyPassphrase.text.toString(),
                     sshHostKeyFingerprint = hostKeyFingerprint.text.toString().trim(),
-                    useHttpPayload = payloadEnabled.isChecked,
-                    httpPayload = payload.text.toString(),
-                    useTls = tlsEnabled.isChecked,
-                    sni = sni.text.toString().trim(),
-                    skipCertificateVerification = skipCertificate.isChecked,
-                    useWebSocket = websocketEnabled.isChecked,
-                    websocketPath = websocketPath.text.toString().ifBlank { "/" },
-                    websocketHeaders = websocketHeaders.text.toString(),
                     dnsServers = dns.text.toString().split(',').map { it.trim() }.filter { it.isNotBlank() }
                         .ifEmpty { listOf("1.1.1.1") },
                     udpEnabled = udpEnabled.isChecked
@@ -487,8 +534,8 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun protocolAdapter(): ArrayAdapter<String> = object : ArrayAdapter<String>(
-        this, android.R.layout.simple_spinner_item, TunnelProtocol.entries.map { it.name }
+    private fun modeAdapter(): ArrayAdapter<String> = object : ArrayAdapter<String>(
+        this, android.R.layout.simple_spinner_item, SetupMode.entries.map { it.label }
     ) {
         init { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
@@ -498,6 +545,16 @@ class MainActivity : Activity() {
                 setPadding(dp(14), 0, dp(14), 0)
             }
         }
+    }
+
+    private fun updateSetupVisibility() {
+        if (!::setupMode.isInitialized) return
+        val mode = SetupMode.entries[setupMode.selectedItemPosition]
+        proxySection.visibility = if (mode.usesPayload || mode == SetupMode.SOCKS5) View.VISIBLE else View.GONE
+        proxyAuthSection.visibility = if (mode == SetupMode.SOCKS5) View.VISIBLE else View.GONE
+        sshSection.visibility = if (mode == SetupMode.SOCKS5) View.GONE else View.VISIBLE
+        payloadSection.visibility = if (mode.usesPayload) View.VISIBLE else View.GONE
+        tlsSection.visibility = if (mode.usesTls) View.VISIBLE else View.GONE
     }
 
     private fun profileAdapter(items: List<String>): ArrayAdapter<String> = object : ArrayAdapter<String>(
@@ -517,6 +574,12 @@ class MainActivity : Activity() {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(16), dp(16), dp(16))
         background = rounded(cardBackground, 14)
+    }
+
+    private fun setupSection(title: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, dp(12), 0, 0)
+        addView(label(title, 11f, primary, true).apply { setPadding(0, 0, 0, dp(6)) })
     }
 
     private fun field(hint: String) = EditText(this).apply {
@@ -576,6 +639,24 @@ class MainActivity : Activity() {
         value < 1024 * 1024 -> "${value / 1024} KB"
         value < 1024L * 1024 * 1024 -> "${value / (1024 * 1024)} MB"
         else -> "${value / (1024L * 1024 * 1024)} GB"
+    }
+
+    private enum class SetupMode(val label: String, val usesPayload: Boolean, val usesTls: Boolean) {
+        SOCKS5("SOCKS5 Proxy", false, false),
+        SSH_DIRECT("SSH Direct", false, false),
+        SSH_HTTP("SSH + Custom HTTP Payload", true, false),
+        SSH_TLS("SSH + TLS / SNI", false, true),
+        SSH_HTTP_TLS("SSH + HTTP Payload + TLS / SNI", true, true);
+
+        companion object {
+            fun from(config: TunnelConfig): SetupMode = when {
+                config.protocol == TunnelProtocol.SOCKS5 -> SOCKS5
+                config.useHttpPayload && config.useTls -> SSH_HTTP_TLS
+                config.useHttpPayload -> SSH_HTTP
+                config.useTls -> SSH_TLS
+                else -> SSH_DIRECT
+            }
+        }
     }
 
     companion object {
