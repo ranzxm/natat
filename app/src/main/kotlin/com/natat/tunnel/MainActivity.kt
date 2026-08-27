@@ -89,7 +89,7 @@ class MainActivity : Activity() {
 
     private fun field(hint: String) = EditText(this).apply {
         this.hint = hint
-        singleLine = true
+        setSingleLine(true)
         setPadding(0, 12, 0, 12)
     }
 
