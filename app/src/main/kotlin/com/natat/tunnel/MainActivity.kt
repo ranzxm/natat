@@ -510,7 +510,7 @@ class MainActivity : Activity() {
         heading("SSH SECURITY")
         val privateKey = input(draft.privateKey, "Private key (paste PEM)", multiLine = true)
         val privateKeyPassphrase = input(draft.privateKeyPassphrase, "Private key passphrase", secret = true)
-        val hostKeyFingerprint = input(draft.sshHostKeyFingerprint, "SSH host key SHA256 fingerprint")
+        val hostKeyFingerprint = input(draft.sshHostKeyFingerprint, "SSH host key fingerprint (optional on first connection)")
         heading("VPN / DNS")
         val dns = input(draft.dnsServers.joinToString(", "), "DNS servers, comma separated")
         val udpEnabled = toggle("Enable UDP relay", draft.udpEnabled)

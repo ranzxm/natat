@@ -37,15 +37,19 @@ class SshSocksProxy(
     private var server: ServerSocket? = null
     private var session: Session? = null
     private var acceptThread: Thread? = null
+    private lateinit var hostKeyRepository: FingerprintHostKeyRepository
+
+    val learnedHostKeyFingerprint: String?
+        get() = hostKeyRepository.learnedFingerprint
 
     fun start(): LocalSocksEndpoint {
         require(config.sshHost.isNotBlank()) { "SSH host belum diisi" }
         require(config.sshUsername.isNotBlank()) { "SSH username belum diisi" }
-        require(config.sshHostKeyFingerprint.isNotBlank()) { "SSH host key fingerprint wajib diisi" }
         require(!config.useWebSocket) { "WebSocket transport belum tersedia" }
         require(!config.skipCertificateVerification) { "Melewati verifikasi sertifikat tidak didukung" }
+        hostKeyRepository = FingerprintHostKeyRepository(config.sshHostKeyFingerprint)
         val jsch = JSch().apply {
-            setHostKeyRepository(FingerprintHostKeyRepository(config.sshHostKeyFingerprint))
+            setHostKeyRepository(hostKeyRepository)
             if (config.privateKey.isNotBlank()) {
                 addIdentity(
                     "natat-profile-key",
@@ -214,9 +218,15 @@ private class ProtectedSocketProxy(
 
 private class FingerprintHostKeyRepository(fingerprint: String) : HostKeyRepository {
     private val expected = fingerprint.trim().removePrefix("SHA256:").trimEnd('=')
+    var learnedFingerprint: String? = null
+        private set
 
     override fun check(host: String, key: ByteArray): Int {
         val actual = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(key), Base64.NO_WRAP).trimEnd('=')
+        if (expected.isBlank()) {
+            learnedFingerprint = "SHA256:$actual"
+            return HostKeyRepository.OK
+        }
         return if (actual == expected) HostKeyRepository.OK else HostKeyRepository.CHANGED
     }
 

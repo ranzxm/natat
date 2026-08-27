@@ -56,7 +56,16 @@ class TunnelService : VpnService() {
         try {
             val endpoint = when (currentConfig.protocol) {
                 TunnelProtocol.SOCKS5 -> LocalSocksEndpoint(currentConfig.host, currentConfig.port, currentConfig.password)
-                TunnelProtocol.SSH -> SshSocksProxy(currentConfig, this).also { sshProxy = it }.start()
+                TunnelProtocol.SSH -> {
+                    val proxy = SshSocksProxy(currentConfig, this)
+                    sshProxy = proxy
+                    val localEndpoint = proxy.start()
+                    proxy.learnedHostKeyFingerprint?.let { fingerprint ->
+                        currentConfig = currentConfig.copy(sshHostKeyFingerprint = fingerprint)
+                        ConfigStore.save(this, currentConfig)
+                    }
+                    localEndpoint
+                }
                 else -> error("Transport ${currentConfig.protocol} belum tersedia")
             }
             val yaml = File(filesDir, "natat-tunnel.yml")
