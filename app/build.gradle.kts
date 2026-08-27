@@ -3,6 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+dependencies {
+    implementation("com.github.mwiede:jsch:2.28.7")
+}
+
 android {
     namespace = "com.natat.tunnel"
     compileSdk = 35

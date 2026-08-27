@@ -2,6 +2,7 @@ package com.natat.tunnel
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -19,7 +20,9 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -38,6 +41,8 @@ class MainActivity : Activity() {
     private val red = Color.rgb(255, 107, 107)
 
     private lateinit var host: EditText
+    private lateinit var profileName: EditText
+    private lateinit var profilePicker: Spinner
     private lateinit var port: EditText
     private lateinit var username: EditText
     private lateinit var password: EditText
@@ -48,8 +53,11 @@ class MainActivity : Activity() {
     private lateinit var statusDetail: TextView
     private lateinit var connectButton: Button
     private lateinit var logView: TextView
+    private lateinit var trafficView: TextView
     private var tunnelRequested = false
     private var pendingExport: String? = null
+    private var activeConfig = TunnelConfig()
+    private var updatingProfiles = false
 
     private val stateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -58,6 +66,10 @@ class MainActivity : Activity() {
             when (state) {
                 TunnelService.STATE_CONNECTED -> setConnected(detail.ifBlank { "SOCKS5 relay active" })
                 TunnelService.STATE_ERROR -> setRetrying(detail)
+                TunnelService.STATE_STATS -> updateTraffic(
+                    intent?.getLongExtra(TunnelService.EXTRA_TX_BYTES, 0) ?: 0,
+                    intent?.getLongExtra(TunnelService.EXTRA_RX_BYTES, 0) ?: 0
+                )
                 TunnelService.STATE_DISCONNECTED -> {
                     if (!tunnelRequested) setDisconnected(detail)
                     appendLog(detail.ifBlank { "Disconnected" })
@@ -119,6 +131,17 @@ class MainActivity : Activity() {
         root.addView(header)
         root.addView(space(22))
 
+        val profileCard = card()
+        profileCard.addView(sectionTitle("ACTIVE PROFILE"))
+        val profileRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        profilePicker = Spinner(this).apply { background = rounded(fieldBackground, 10) }
+        profileRow.addView(profilePicker, LinearLayout.LayoutParams(0, dp(48), 1f))
+        profileRow.addView(actionButton("NEW") { createProfile() }, LinearLayout.LayoutParams(dp(68), dp(42)).apply { marginStart = dp(8) })
+        profileRow.addView(actionButton("DELETE") { deleteProfile() }, LinearLayout.LayoutParams(dp(76), dp(42)).apply { marginStart = dp(6) })
+        profileCard.addView(profileRow)
+        root.addView(profileCard)
+        root.addView(space(14))
+
         val statusCard = card()
         val statusRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         statusDot = View(this).apply { background = circle(green) }
@@ -131,6 +154,8 @@ class MainActivity : Activity() {
         statusCard.addView(space(18))
         statusCard.addView(statusTitle)
         statusCard.addView(statusDetail)
+        trafficView = label("DOWN 0 B   UP 0 B", 11f, textSecondary, true).apply { setPadding(0, dp(10), 0, 0) }
+        statusCard.addView(trafficView)
         statusCard.addView(space(16))
         connectButton = button("CONNECT", primary).apply { setOnClickListener { startOrStop() } }
         statusCard.addView(connectButton, LinearLayout.LayoutParams(MATCH, dp(48)))
@@ -139,6 +164,9 @@ class MainActivity : Activity() {
         root.addView(space(14))
         val configCard = card()
         configCard.addView(sectionTitle("CONNECTION CONFIG"))
+        profileName = field("Profile name")
+        configCard.addView(profileName, LinearLayout.LayoutParams(MATCH, dp(52)))
+        configCard.addView(space(12))
         configCard.addView(label("Protocol", 12f, textSecondary, false))
         protocol = Spinner(this).apply {
             background = rounded(fieldBackground, 10)
@@ -169,6 +197,8 @@ class MainActivity : Activity() {
         autoReconnect = Switch(this).apply { isChecked = true; buttonTintList = null }
         reconnectRow.addView(autoReconnect)
         configCard.addView(reconnectRow)
+        configCard.addView(space(10))
+        configCard.addView(actionButton("ADVANCED: SSH / PAYLOAD / TLS / WS / DNS") { openAdvancedEditor() }, LinearLayout.LayoutParams(MATCH, dp(42)))
         root.addView(configCard)
 
         root.addView(space(14))
@@ -190,6 +220,20 @@ class MainActivity : Activity() {
         }
         logCard.addView(logView, LinearLayout.LayoutParams(MATCH, dp(92)))
         root.addView(logCard)
+        profilePicker.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (updatingProfiles) return
+                val selected = ConfigStore.profiles(this@MainActivity).getOrNull(position) ?: return
+                if (selected.id != activeConfig.id) {
+                    ConfigStore.save(this@MainActivity, draftConfig(), makeActive = false)
+                    ConfigStore.setActive(this@MainActivity, selected.id)
+                    applyConfig(selected)
+                    appendLog("Selected profile ${selected.name}")
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) = Unit
+        }
         return scroll
     }
 
@@ -223,8 +267,24 @@ class MainActivity : Activity() {
     }
 
     private fun readConfig(): TunnelConfig? {
-        val value = TunnelConfig(
-            name = host.text.toString().trim().ifBlank { "Natat connection" },
+        val value = draftConfig()
+        val valid = when (value.protocol) {
+            TunnelProtocol.SSH -> value.sshHost.isNotBlank() && value.sshPort in 1..65535 &&
+                (!value.useHttpPayload || value.host.isNotBlank() && value.port in 1..65535)
+            else -> value.host.isNotBlank() && value.port in 1..65535
+        }
+        if (!valid) {
+            statusTitle.text = "Invalid config"
+            statusDetail.text = "Enter valid server settings"
+            appendLog("Invalid server settings")
+            return null
+        }
+        return value
+    }
+
+    private fun draftConfig(): TunnelConfig {
+        return activeConfig.copy(
+            name = profileName.text.toString().trim().ifBlank { "Natat connection" },
             protocol = TunnelProtocol.entries[protocol.selectedItemPosition],
             host = host.text.toString().trim(),
             port = port.text.toString().toIntOrNull() ?: 0,
@@ -232,22 +292,44 @@ class MainActivity : Activity() {
             password = password.text.toString(),
             autoReconnect = autoReconnect.isChecked
         )
-        if (value.host.isBlank() || value.port !in 1..65535) {
-            statusTitle.text = "Invalid config"
-            statusDetail.text = "Enter a valid host and port"
-            appendLog("Invalid host or port")
-            return null
-        }
-        return value
     }
 
     private fun applyConfig(config: TunnelConfig) {
+        activeConfig = config
+        profileName.setText(config.name)
         host.setText(config.host)
         port.setText(config.port.toString())
         username.setText(config.username)
         password.setText(config.password)
         autoReconnect.isChecked = config.autoReconnect
         protocol.setSelection(TunnelProtocol.entries.indexOf(config.protocol).coerceAtLeast(0))
+        refreshProfilePicker(config.id)
+    }
+
+    private fun refreshProfilePicker(selectedId: String) {
+        if (!::profilePicker.isInitialized) return
+        val profiles = ConfigStore.profiles(this)
+        updatingProfiles = true
+        profilePicker.adapter = profileAdapter(profiles.map { it.name })
+        profilePicker.setSelection(profiles.indexOfFirst { it.id == selectedId }.coerceAtLeast(0))
+        updatingProfiles = false
+    }
+
+    private fun createProfile() {
+        val config = TunnelConfig(name = "New profile")
+        ConfigStore.save(this, config)
+        applyConfig(config)
+        appendLog("Created profile")
+    }
+
+    private fun deleteProfile() {
+        if (ConfigStore.profiles(this).size == 1) {
+            appendLog("At least one profile is required")
+            return
+        }
+        ConfigStore.delete(this, activeConfig.id)
+        applyConfig(ConfigStore.load(this))
+        appendLog("Deleted profile")
     }
 
     private fun importConfig() {
@@ -295,6 +377,10 @@ class MainActivity : Activity() {
         appendLog("Tunnel is running")
     }
 
+    private fun updateTraffic(txBytes: Long, rxBytes: Long) {
+        trafficView.text = "DOWN ${formatBytes(rxBytes)}   UP ${formatBytes(txBytes)}"
+    }
+
     private fun setRetrying(detail: String) {
         statusTitle.text = "Reconnecting..."
         statusDetail.text = detail.ifBlank { "Waiting before retry" }
@@ -315,8 +401,107 @@ class MainActivity : Activity() {
         logView.text = (if (previous.isBlank()) message else "$previous\n$message").takeLast(400)
     }
 
+    private fun openAdvancedEditor() {
+        val draft = draftConfig()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), 0)
+        }
+        val scroll = ScrollView(this).apply { addView(content) }
+        fun heading(value: String) {
+            content.addView(sectionTitle(value).apply { setPadding(0, dp(14), 0, dp(8)) })
+        }
+        fun input(value: String, hint: String, secret: Boolean = false, multiLine: Boolean = false): EditText {
+            return field(hint).apply {
+                setText(value)
+                if (secret) inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                if (multiLine) {
+                    setSingleLine(false)
+                    minLines = 3
+                    gravity = Gravity.TOP
+                }
+                content.addView(this, LinearLayout.LayoutParams(MATCH, if (multiLine) dp(86) else dp(52)).apply { bottomMargin = dp(8) })
+            }
+        }
+        fun toggle(label: String, checked: Boolean): CheckBox {
+            return CheckBox(this).apply {
+                text = label
+                isChecked = checked
+                textSize = 13f
+                setTextColor(textPrimary)
+                content.addView(this)
+            }
+        }
+
+        heading("SSH ACCOUNT")
+        val sshHost = input(draft.sshHost, "SSH host")
+        val sshPort = input(draft.sshPort.toString(), "SSH port")
+        val sshUser = input(draft.sshUsername, "SSH username")
+        val sshPassword = input(draft.sshPassword, "SSH password", secret = true)
+        val privateKey = input(draft.privateKey, "Private key (paste PEM)", multiLine = true)
+        val privateKeyPassphrase = input(draft.privateKeyPassphrase, "Private key passphrase", secret = true)
+        val hostKeyFingerprint = input(draft.sshHostKeyFingerprint, "SSH host key SHA256 fingerprint")
+        heading("HTTP PAYLOAD")
+        val payloadEnabled = toggle("Enable custom HTTP payload", draft.useHttpPayload)
+        val payload = input(draft.httpPayload, "CONNECT / HTTP/1.1 ...", multiLine = true)
+        heading("TLS / SNI")
+        val tlsEnabled = toggle("Wrap transport with TLS", draft.useTls)
+        val sni = input(draft.sni, "SNI / server name")
+        val skipCertificate = toggle("Skip certificate verification", draft.skipCertificateVerification)
+        heading("WEBSOCKET")
+        val websocketEnabled = toggle("Enable WebSocket transport", draft.useWebSocket)
+        val websocketPath = input(draft.websocketPath, "WebSocket path")
+        val websocketHeaders = input(draft.websocketHeaders, "Extra headers, one per line", multiLine = true)
+        heading("VPN / DNS")
+        val dns = input(draft.dnsServers.joinToString(", "), "DNS servers, comma separated")
+        val udpEnabled = toggle("Enable UDP relay", draft.udpEnabled)
+
+        AlertDialog.Builder(this)
+            .setTitle("Advanced connection settings")
+            .setView(scroll)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                activeConfig = draft.copy(
+                    sshHost = sshHost.text.toString().trim(),
+                    sshPort = sshPort.text.toString().toIntOrNull()?.coerceIn(1, 65535) ?: 22,
+                    sshUsername = sshUser.text.toString(),
+                    sshPassword = sshPassword.text.toString(),
+                    privateKey = privateKey.text.toString(),
+                    privateKeyPassphrase = privateKeyPassphrase.text.toString(),
+                    sshHostKeyFingerprint = hostKeyFingerprint.text.toString().trim(),
+                    useHttpPayload = payloadEnabled.isChecked,
+                    httpPayload = payload.text.toString(),
+                    useTls = tlsEnabled.isChecked,
+                    sni = sni.text.toString().trim(),
+                    skipCertificateVerification = skipCertificate.isChecked,
+                    useWebSocket = websocketEnabled.isChecked,
+                    websocketPath = websocketPath.text.toString().ifBlank { "/" },
+                    websocketHeaders = websocketHeaders.text.toString(),
+                    dnsServers = dns.text.toString().split(',').map { it.trim() }.filter { it.isNotBlank() }
+                        .ifEmpty { listOf("1.1.1.1") },
+                    udpEnabled = udpEnabled.isChecked
+                )
+                ConfigStore.save(this, draftConfig())
+                appendLog("Advanced settings saved")
+            }
+            .show()
+    }
+
     private fun protocolAdapter(): ArrayAdapter<String> = object : ArrayAdapter<String>(
         this, android.R.layout.simple_spinner_item, TunnelProtocol.entries.map { it.name }
+    ) {
+        init { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            return (super.getView(position, convertView, parent) as TextView).apply {
+                setTextColor(textPrimary)
+                textSize = 14f
+                setPadding(dp(14), 0, dp(14), 0)
+            }
+        }
+    }
+
+    private fun profileAdapter(items: List<String>): ArrayAdapter<String> = object : ArrayAdapter<String>(
+        this, android.R.layout.simple_spinner_item, items
     ) {
         init { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
@@ -385,6 +570,13 @@ class MainActivity : Activity() {
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun formatBytes(value: Long): String = when {
+        value < 1024 -> "$value B"
+        value < 1024 * 1024 -> "${value / 1024} KB"
+        value < 1024L * 1024 * 1024 -> "${value / (1024 * 1024)} MB"
+        else -> "${value / (1024L * 1024 * 1024)} GB"
+    }
 
     companion object {
         private const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT

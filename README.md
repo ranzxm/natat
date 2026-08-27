@@ -23,7 +23,15 @@ Configuration is stored as JSON in app-private storage. Example:
 }
 ```
 
-The service uses the embedded `hev-socks5-tunnel` native engine for the TUN-to-SOCKS5 relay. The service excludes its own package from the VPN, stops the native worker before closing the TUN descriptor, and monitors the worker for reconnects. The first working transport is standard SOCKS5; SSH, HTTP proxy, TLS wrapper, and WebSocket transports are reserved for later engine adapters.
+The service uses the embedded `hev-socks5-tunnel` native engine for the TUN-to-SOCKS5 relay. The service excludes its own package from the VPN, stops the native worker before closing the TUN descriptor, and monitors the worker for reconnects.
+
+Implemented transports:
+
+- SOCKS5 upstream with optional username/password.
+- SSH dynamic forwarding through a bounded loopback SOCKS5 bridge, with password or private-key authentication and required SHA-256 host-key fingerprint verification.
+- Optional custom HTTP payload and TLS/SNI wrapping for the SSH transport. Certificate verification remains required.
+
+Profiles also include DNS servers, UDP preference, auto-reconnect, traffic totals, import/export JSON, and settings reserved for WebSocket. WebSocket framing is not enabled yet because it requires a complete binary stream adapter; selecting it reports that limitation instead of opening an unsafe or nonfunctional connection.
 
 The native engine is tracked as a recursive Git submodule at `third-party/hev-socks5-tunnel`. It is built for `arm64-v8a`, `armeabi-v7a`, and `x86_64` by the GitHub Actions workflow.
 

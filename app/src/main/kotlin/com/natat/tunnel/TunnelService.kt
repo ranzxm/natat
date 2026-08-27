@@ -21,6 +21,7 @@ class TunnelService : VpnService() {
     private var monitor: ScheduledFuture<*>? = null
     private var vpnInterface: ParcelFileDescriptor? = null
     private var configFile: File? = null
+    private var sshProxy: SshSocksProxy? = null
     private var currentConfig = TunnelConfig()
     private var retry = 0
     private var stopped = false
@@ -34,7 +35,7 @@ class TunnelService : VpnService() {
         if (intent?.action == ACTION_STOP) {
             stopped = true
             executor.execute {
-        stopTunnel("Dihentikan")
+                stopTunnel("Dihentikan")
                 stopSelf(startId)
             }
             return START_NOT_STICKY
@@ -51,15 +52,15 @@ class TunnelService : VpnService() {
 
     private fun startTunnel() {
         if (stopped) return
-        if (currentConfig.protocol != TunnelProtocol.SOCKS5) {
-            fail("Versi awal hanya mendukung SOCKS5", reconnect = false)
-            return
-        }
-
         stopTunnel("Menyambungkan ulang")
         try {
+            val endpoint = when (currentConfig.protocol) {
+                TunnelProtocol.SOCKS5 -> LocalSocksEndpoint(currentConfig.host, currentConfig.port, currentConfig.password)
+                TunnelProtocol.SSH -> SshSocksProxy(currentConfig, this).also { sshProxy = it }.start()
+                else -> error("Transport ${currentConfig.protocol} belum tersedia")
+            }
             val yaml = File(filesDir, "natat-tunnel.yml")
-            yaml.writeText(currentConfig.toNativeYaml())
+            yaml.writeText(currentConfig.toNativeYaml(endpoint))
             val interfaceBuilder = Builder()
                 .setSession(currentConfig.name)
                 .setMtu(1500)
@@ -67,9 +68,8 @@ class TunnelService : VpnService() {
                 .addAddress("fc00::1", 128)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
-                .addDnsServer("1.1.1.1")
-                .addDnsServer("2606:4700:4700::1111")
                 .addDisallowedApplication(packageName)
+            currentConfig.dnsServers.forEach { interfaceBuilder.addDnsServer(it) }
             vpnInterface = interfaceBuilder.establish() ?: error("VPN interface gagal dibuat")
             configFile = yaml
             val descriptor = vpnInterface ?: error("VPN descriptor tidak tersedia")
@@ -77,7 +77,7 @@ class TunnelService : VpnService() {
             retry = 0
             monitor?.cancel(false)
             monitor = executor.scheduleWithFixedDelay({ monitorTunnel() }, 2, 5, TimeUnit.SECONDS)
-            updateNotification("Terhubung via SOCKS5")
+            updateNotification("Terhubung via ${currentConfig.protocol}")
             broadcast(STATE_CONNECTED)
         } catch (error: Exception) {
             fail(error.message ?: "Koneksi gagal")
@@ -87,6 +87,10 @@ class TunnelService : VpnService() {
     private fun monitorTunnel() {
         if (stopped || !NativeTunnel.isRunning()) {
             if (!stopped) fail("Tunnel berhenti, mencoba ulang")
+            return
+        }
+        NativeTunnel.stats().takeIf { it.size == 4 }?.let { stats ->
+            broadcast(STATE_STATS, txBytes = stats[1], rxBytes = stats[3])
         }
     }
 
@@ -107,6 +111,8 @@ class TunnelService : VpnService() {
         monitor?.cancel(false)
         monitor = null
         runCatching { NativeTunnel.stop() }
+        runCatching { sshProxy?.close() }
+        sshProxy = null
         vpnInterface?.close()
         vpnInterface = null
         configFile?.delete()
@@ -140,9 +146,12 @@ class TunnelService : VpnService() {
         }
     }
 
-    private fun broadcast(state: String, detail: String = "") {
+    private fun broadcast(state: String, detail: String = "", txBytes: Long = 0, rxBytes: Long = 0) {
         sendBroadcast(Intent(ACTION_STATE).setPackage(packageName)
-            .putExtra(EXTRA_STATE, state).putExtra(EXTRA_DETAIL, detail))
+            .putExtra(EXTRA_STATE, state)
+            .putExtra(EXTRA_DETAIL, detail)
+            .putExtra(EXTRA_TX_BYTES, txBytes)
+            .putExtra(EXTRA_RX_BYTES, rxBytes))
     }
 
     override fun onDestroy() {
@@ -164,15 +173,18 @@ class TunnelService : VpnService() {
         const val EXTRA_CONFIG = "config"
         const val EXTRA_STATE = "state"
         const val EXTRA_DETAIL = "detail"
+        const val EXTRA_TX_BYTES = "tx_bytes"
+        const val EXTRA_RX_BYTES = "rx_bytes"
         const val STATE_CONNECTED = "connected"
         const val STATE_DISCONNECTED = "disconnected"
         const val STATE_ERROR = "error"
+        const val STATE_STATS = "stats"
         private const val CHANNEL_ID = "tunnel"
         private const val NOTIFICATION_ID = 1001
     }
 }
 
-private fun TunnelConfig.toNativeYaml(): String = """
+private fun TunnelConfig.toNativeYaml(endpoint: LocalSocksEndpoint): String = """
 tunnel:
   name: natat
   mtu: 1500
@@ -180,10 +192,10 @@ tunnel:
   ipv6: 'fc00::1'
   icmp: 'off'
 socks5:
-  address: '${host.yamlValue()}'
-  port: $port
-  udp: 'udp'
-${if (username.isNotBlank()) "  username: '${username.yamlValue()}'\n" else ""}${if (password.isNotBlank()) "  password: '${password.yamlValue()}'\n" else ""}misc:
+  address: '${endpoint.host.yamlValue()}'
+  port: ${endpoint.port}
+  udp: '${if (protocol == TunnelProtocol.SSH || !udpEnabled) "tcp" else "udp"}'
+${if (protocol == TunnelProtocol.SOCKS5 && username.isNotBlank()) "  username: '${username.yamlValue()}'\n" else ""}${if (protocol == TunnelProtocol.SOCKS5 && endpoint.password.isNotBlank()) "  password: '${endpoint.password.yamlValue()}'\n" else ""}${if (protocol == TunnelProtocol.SSH) "  username: 'natat'\n  password: '${endpoint.password.yamlValue()}'\n" else ""}misc:
   connect-timeout: $connectTimeoutMs
   log-level: error
 """.trimIndent()
